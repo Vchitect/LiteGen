@@ -132,8 +132,33 @@ Sequence Parallel inherently requires scatter and gather operations on tensors w
 We have successfully implemented Sequence Parallel support for the Vchitect-XL model using LiteGen. For reference, you can find the relevant code in the [Vchitect-XL]() repository.
 
 
-#### Sharded Untrainable Model
-🚧 Content is under construction.
+#### Sharded Encoder
+
+In addition to optimizing the trainable model, LiteGen also supports parameter sharding for inference-only (untrainable) models, such as text encoders in diffusion tasks. This feature further reduces memory usage across your entire pipeline.
+
+Configure this feature as follows:
+
+```yaml
+encoder:
+  fsdp: True        # Enable parameter sharding
+  group: False      # When True, sharding is limited to within a node, reducing inter-node communication overhead
+```
+
+**Note:** The system identifies models for sharded encoder optimization by checking for the absence of parameters with `requires_grad=True`. To utilize this optimization, set `requires_grad_(False)` on the relevant model before calling LiteGen's `initialize()` method.
+
+Here's an example of optimizing both a trainable model and an untrainable model simultaneously:
+
+```python
+dit = load_dit_model()
+text_encoder = load_text_encoders()
+dit.train()
+text_encoder.requires_grad_(False)
+dit, text_encoder = gen.initialize(dit, text_encoder)
+```
+
+
+
+
 
 #### Computing Function Compile
 
