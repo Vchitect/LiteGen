@@ -292,3 +292,6 @@ config = EasyDict(cfg)
 gen = LiteGen(config)
 ```
 
+## License
+
+This code is licensed under Apache-2.0.
