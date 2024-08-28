@@ -85,7 +85,25 @@ group_zero: True
 
 **Note**: While the `initialize` interface supports optimizing multiple models passed in any order, it only supports one trainable model. The function determines if a model is trainable by checking if any of its parameters have `requires_grad=True`. For all non-trainable models passed to the function, ensure you set `.requires_grad_(False)` beforehand.
 
-#### Selective Gradient Checkpointing and Activation Offload
+#### Selective Activation Checkpointing
+
+LiteGen incorporates activation checkpointing, a common optimization technique for reducing memory usage, and simplifies its usage. Furthermore, when sufficient memory is available, we allow for selective application of activation checkpointing to specific modules, thereby reducing performance overhead.
+
+Example configuration:
+
+```yaml
+selective_ratio: 0.2    # Ratio of modules that do NOT use activation checkpointing. 
+                        # 0: All blocks in the model use activation checkpointing.
+                        # 1: No blocks in the model use activation checkpointing.
+```
+
+**Note:**
+
+1. Activation checkpointing only applies to the trainable model.
+2. Implement `get_fsdp_wrap_module_list()` in your model class to specify modules for checkpointing.
+3. If not implemented, LiteGen automatically detects and applies checkpointing to repetitive module structures in the model (e.g., repeated transformer blocks in DiT models).
+
+#### Activation Offload
 🚧 Content is under construction.
 
 #### Sequence Parallel
