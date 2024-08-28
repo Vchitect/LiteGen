@@ -174,20 +174,72 @@ ema:
 gen.update_ema(model, decay=0.9999)
 ```
 
+#### Checkpoint saving and loading
 
+LiteGen provides convenient interfaces for saving and loading checkpoints, enabling easy resumption of training without dealing with the intricacies of distributed checkpoints.
 
+**Saving Checkpoints**
 
+We offer three separate interfaces for saving model, optimizer, and EMA model states:
 
+```python
+gen.save_model(output_folder=None, filename=None, step=None)
+gen.save_optimizer(output_folder=None, filename=None, step=None)
+gen.save_ema(output_folder=None, filename=None, step=None)
+```
 
-#### Function Compile
+1. Specify `output_folder` and `filename` to determine the checkpoint file location.
+2. If `output_folder` is unspecified but `filename` is provided, the system uses the `result_dir` defined in the config.
+3. Without a specified `filename`, the system uses the `exp_name` from the config as the checkpoint prefix:
+   * Model: `[exp_name].pth`
+   * Optimizer: `[exp_name].optim_state.pth`
+   * EMA model: `[exp_name].ema.pth`
+4. We recommend specifying the current `step` when saving checkpoints. If `step` is provided without a `filename`, the system appends the step information to the `exp_name` prefix: `[exp_name]_step[StepNum]`.
 
-🚧 Content is under construction.
+**Loading Checkpoints**
 
-#### Helpful Tools 
+LiteGen supports various checkpoint loading modes, configurable in the config file. Listed in order of increasing priority:
 
-##### EMA Model
-🚧 Content is under construction.
+1. `init_from`:
 
-##### Checkpoint saving and loading
-🚧 Content is under construction.
+   * Used for loading initial model weights.
+   * Suitable for starting a new fine-tuning process (step=0).
+   * Loads only the model state dict, not optimizer state or EMA weights.
 
+   Example:
+
+   ```yaml
+   init_from: 'path_to_the_init_model/model.pth'
+   ```
+
+2. `resume_from`:
+
+   * Used to resume training from a specific checkpoint.
+   * Automatically loads corresponding optimizer state.
+   * For EMA model resumption, specify the EMA checkpoint path separately.
+
+   Example:
+
+   ```yaml
+   resume_from: 'path_to_the_resumed_model/model_10.pth'
+   ema:
+     enable: True
+     resume_from: 'path_to_the_resumed_ema/ema_10.pth'
+   ```
+
+   Note: `resume_from` takes precedence over `init_from` if both are specified.
+
+3. `auto_resume`:
+
+   * Automatically finds and resumes from the latest saved checkpoint.
+   * Enable by setting `auto_resume: True` in the config.
+   * Works best with `save_model()`, `save_optimizer()`, and `save_ema()` calls that only specify the `step`.
+   * Searches for the most recent checkpoint (based on step number) in the `result_dir` with the `exp_name` prefix.
+
+   Example:
+
+   ```yaml
+   auto_resume: True
+   ```
+
+   Note: `auto_resume` has higher priority than `resume_from`. It only activates when `resume_from` is empty or unspecified to avoid confusion.
