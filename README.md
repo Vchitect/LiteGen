@@ -243,3 +243,52 @@ LiteGen supports various checkpoint loading modes, configurable in the config fi
    ```
 
    Note: `auto_resume` has higher priority than `resume_from`. It only activates when `resume_from` is empty or unspecified to avoid confusion.
+
+
+### Config file
+
+
+As a lightweight training framework, `LiteGen` does not impose restrictions on the type of configuration files, nor does it provide built-in config file parsing. The only requirement for config files is that, once parsed, they should allow access to the necessary system fields using the `config.key` syntax.
+
+We recommend using YAML format for configuration files and parsing them as follows:
+
+1. Define a YAML file. Example:
+
+```yaml
+exp_name: 'video_generation_exp1'
+results_dir: 'path_to_the_results_dir'
+
+# Checkpoint loading
+init_from: 'path_to_the_init_model/model.pth'
+auto_resume: False
+
+# Model optimization
+selective_ratio: 0
+ac_offload: True
+zero_degree: 3
+group_zero: True
+
+... # Other arguments
+```
+
+2. Parse the config file in Python:
+
+```python
+import argparse
+import yaml
+from easydict import EasyDict
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--config', type=str, default='configs/config.yaml', help='config file')
+args = parser.parse_args()
+with open(args.config) as f:
+    cfg = yaml.load(f, Loader=yaml.FullLoader)
+config = EasyDict(cfg)
+```
+
+3. Initialize the LiteGen instance using the config:
+
+```python
+gen = LiteGen(config)
+```
+
