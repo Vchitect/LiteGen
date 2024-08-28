@@ -116,7 +116,20 @@ ac_offload: True
 **Note:** This feature, like selective activation checkpointing, applies to the trainable model and relies on the `get_fsdp_wrap_module_list()` method or automatic detection of repetitive modules.
 
 #### Sequence Parallel
-🚧 Content is under construction.
+
+LiteGen supports the DeepSpeed Ulysses implementation of Sequence Parallel. Through module conversion mechanisms and PyTorch hooks, we enable the transformation from a serial model to a Sequence Parallel model with minimal modifications.
+
+You can configure this feature as follows:
+
+```yaml
+sp_size: 8  # Sequence parallel degree
+```
+
+**Note:** 
+
+Sequence Parallel inherently requires scatter and gather operations on tensors within certain modules. Therefore, LiteGen's implementation necessitates a Sequence Parallel version of the AttentionProcessor for the Attention class, as well as a conversion mapping in the ModuleConverter from serial AttentionProcessor to its Sequence Parallel counterpart.
+
+We have successfully implemented Sequence Parallel support for the Vchitect-XL model using LiteGen. For reference, you can find the relevant code in the [Vchitect-XL]() repository.
 
 
 #### Sharded Untrainable Model
