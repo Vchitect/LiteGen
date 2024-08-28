@@ -156,11 +156,30 @@ text_encoder.requires_grad_(False)
 dit, text_encoder = gen.initialize(dit, text_encoder)
 ```
 
+#### EMA Model
+
+The Exponential Moving Average (EMA) model is a common technique used to smooth parameter updates and achieve better training results. LiteGen integrates EMA Model functionality with support for parameter sharding to conserve GPU memory, while providing an easy-to-use interface.
+
+Example configuration:
+
+```yaml
+ema:
+  enable: True   # Enable EMA
+  sharded: True  # Use parameter sharding for the EMA model
+```
+
+**User Interface:** LiteGen provides a simple method to update the EMA model:
+
+```python
+gen.update_ema(model, decay=0.9999)
+```
 
 
 
 
-#### Computing Function Compile
+
+
+#### Function Compile
 
 🚧 Content is under construction.
 
