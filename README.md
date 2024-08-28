@@ -104,7 +104,16 @@ selective_ratio: 0.2    # Ratio of modules that do NOT use activation checkpoint
 3. If not implemented, LiteGen automatically detects and applies checkpointing to repetitive module structures in the model (e.g., repeated transformer blocks in DiT models).
 
 #### Activation Offload
-🚧 Content is under construction.
+
+To further conserve GPU memory, we have implemented CPU offloading for activations in our system. This technique effectively overlaps computation and communication, significantly reducing memory usage during training with minimal additional performance overhead.
+
+You can enable this feature using the following configuration:
+
+```yaml
+ac_offload: True
+```
+
+**Note:** This feature, like selective activation checkpointing, applies to the trainable model and relies on the `get_fsdp_wrap_module_list()` method or automatic detection of repetitive modules.
 
 #### Sequence Parallel
 🚧 Content is under construction.
