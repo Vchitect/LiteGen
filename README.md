@@ -304,4 +304,4 @@ Results demonstrate that with all memory optimizations enabled, LiteGen supports
 
 ## 🔑 License
 
-This code is licensed under Apache-2.0.
+This code is licensed under BSD-3-Clause license.
