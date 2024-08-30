@@ -298,7 +298,7 @@ LiteGen implements Sequence Parallel and Activation Offload techniques, which ef
 
 <p align="center">
     <picture>
-<img src="https://github.com/Vchitect/LiteGen/blob/main/assets/imgs/sequence_length.jpg?raw=true" width="450">
+<img src="https://github.com/Vchitect/LiteGen/blob/main/assets/imgs/sequence_length.jpg?raw=true">
     </picture>
 </p>
 
