@@ -733,34 +733,11 @@ class LiteGen:
         optimizer = self.load_optimizer_state(optimizer)
 
         for param_group in optimizer.param_groups:
-            param_group["lr"] = self.config.lr
-            param_group["weight_decay"] = self.config.weight_decay
+            param_group["lr"] = self.learning_rate
+            param_group["weight_decay"] = self.weight_decay
         
         self.optimizer = optimizer
         return optimizer
-
-    def _initialize_dataset_naive(self, obj):
-        assert isinstance(obj, torch.utils.data.Dataset), f"obj should be a torch Dataset, but got {type(obj)}"
-        if CommContext().get_world_size(ParallelMode.DATA_PARALLEL) > 1:
-            sampler = DistributedSampler(obj, num_replicas=CommContext().get_world_size(ParallelMode.DATA_PARALLEL), rank=CommContext().get_local_rank(ParallelMode.DATA_PARALLEL), shuffle=True)
-        else:
-            sampler = None
-
-        def dataloader_collate_fn(samples):
-            image = [x[0] for x in samples]
-            caps = [x[1] for x in samples]
-            return image, caps
-        
-        loader = DataLoader(
-            obj,
-            batch_size=1,
-            collate_fn=dataloader_collate_fn,
-            shuffle=not isinstance(sampler, DistributedSampler),
-            num_workers=self.config.num_workers,
-            pin_memory=self.config.pin_memory,
-            sampler=sampler,
-        )
-        return loader
 
     def _initialize_dataset(self, obj):
         assert isinstance(obj, ConstRegistry().support_datasets), f"only support dataset with type {ConstRegistry().support_datasets}, but got {type(obj)}"
@@ -828,8 +805,6 @@ class LiteGen:
                 continue
             elif isinstance(obj, torch.optim.Optimizer):
                 obj = self._initialize_optimizer(obj)
-            elif isinstance(obj, torch.optim.lr_scheduler._LRScheduler):
-                obj = self._initialize_lr_scheduler(obj)
             elif isinstance(obj, ConstRegistry().support_datasets):
                 obj = self._initialize_dataset(obj)
             elif isinstance(obj, Callable):
