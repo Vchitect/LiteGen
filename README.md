@@ -296,11 +296,7 @@ gen = LiteGen(config)
 
 LiteGen implements Sequence Parallel and Activation Offload techniques, which effectively reduce memory usage and enable training on long sequences for Diffusion tasks. We conducted tests on NVIDIA A100 GPUs to determine the maximum supported sequence length when training Vchitect-XL. All other optimizations remained the same. The results are as follows:
 
-<p align="center">
-    <picture>
-<img src="https://github.com/Vchitect/LiteGen/blob/main/assets/imgs/sequence_length.jpg?raw=true">
-    </picture>
-</p>
+![Sequence_length](assets/imgs/sequence_length.jpg)
 
 (AO: Activation Offload, SP: Sequence Parallel)
 
