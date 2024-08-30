@@ -292,6 +292,20 @@ config = EasyDict(cfg)
 gen = LiteGen(config)
 ```
 
+## 🚀 Performance
+
+LiteGen implements Sequence Parallel and Activation Offload techniques, which effectively reduce memory usage and enable training on long sequences for Diffusion tasks. We conducted tests on NVIDIA A100 GPUs to determine the maximum supported sequence length when training Vchitect-XL. All other optimizations remained the same. The results are as follows:
+
+<p align="center">
+    <picture>
+<img src="https://github.com/Vchitect/LiteGen/blob/main/assets/imgs/sequence_length.jpg?raw=true" width="450">
+    </picture>
+</p>
+
+(AO: Activation Offload, SP: Sequence Parallel)
+
+Results demonstrate that with all memory optimizations enabled, LiteGen supports training on sequences up to 1.63 million tokens in length using 8x NVIDIA A100 GPUs. This corresponds to approximately 150 seconds of video at 760x460 resolution.
+
 ## 🔑 License
 
 This code is licensed under Apache-2.0.
