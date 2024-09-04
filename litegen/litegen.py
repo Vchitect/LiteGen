@@ -1,48 +1,50 @@
-from .distributed.initialize import initialize_distributed_env
-import torch.distributed as dist
-from torch import nn
+import copy
+import functools
 import gc
 import os
-import torch
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    ShardingStrategy, MixedPrecision,
-)
-from torch.distributed.fsdp.wrap import lambda_auto_wrap_policy
-import functools
-from functools import partial
+import random
 import re
+import warnings
+from collections import OrderedDict
+from functools import partial
+from typing import Callable, Union
 
-from .distributed.comm_context import CommContext
-from .distributed.group_initializer import ParallelMode, CommMode
-import logging
+import numpy as np
+import torch
+import torch.distributed as dist
+from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    CheckpointWrapper,
-    checkpoint_wrapper,
     CheckpointImpl,
-    apply_activation_checkpointing
+    CheckpointWrapper,
+    apply_activation_checkpointing,
+    checkpoint_wrapper,
 )
 from torch.distributed.checkpoint.state_dict import (
     StateDictOptions,
     get_model_state_dict,
     get_optimizer_state_dict,
 )
-from torch.utils.data.distributed import DistributedSampler
-from litegen.offload.async_offload import async_offload_wrapper
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp.wrap import lambda_auto_wrap_policy
 from torch.nn.parallel import DistributedDataParallel as DDP
-from typing import Callable, Union
-import warnings
-from collections import OrderedDict
-from .utils.ema import ShardedEMA
 from torch.utils.data import DataLoader
-import copy
-import numpy as np
-import random
-from .module_convert import ModuleConverter
 
+from litegen.offload.async_offload import async_offload_wrapper
+
+from .distributed.comm_context import CommContext
+from .distributed.group_initializer import CommMode, ParallelMode
+from .distributed.initialize import initialize_distributed_env
+from .module_convert import ModuleConverter
 from .utils.const_registry import ConstRegistry
+from .utils.ema import ShardedEMA
+
 
 class LiteGen:
+    """
+    class for LiteGen
+    """
+
     def __init__(self, config):
         super().__init__()
         self.sanity_check(config)
@@ -56,17 +58,21 @@ class LiteGen:
 
         self.zero_degree = config.zero_degree if hasattr(config, "zero_degree") else None
         self.group_zero = config.group_zero if hasattr(config, "group_zero") else False
-        self.precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[config.precision]
-        self.grad_precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[config.grad_precision or config.precision]
+        self.precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[
+            config.precision
+        ]
+        self.grad_precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[
+            config.grad_precision or config.precision
+        ]
         self.learning_rate = config.lr
         self.fused_optimizer = config.fused_optimizer
         self.weight_decay = config.weight_decay
 
         self.distributed_backend = config.distributed_backend if hasattr(config, "distributed_backend") else "torch"
 
-        self.ac_offload = getattr(config, 'ac_offload', False)
-        self.selective_ratio = getattr(config, 'selective_ratio', 1) # ratio NOT use activation checkpoint
-        
+        self.ac_offload = getattr(config, "ac_offload", False)
+        self.selective_ratio = getattr(config, "selective_ratio", 1)  # ratio NOT use activation checkpoint
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.fused_layernorm = config.fused_layernorm
@@ -100,26 +106,28 @@ class LiteGen:
             torch.cuda.manual_seed_all(seed)
             torch.cuda.manual_seed(seed)
 
-
     def _setup_sharded_encoder(self, model: nn.Module) -> Union[FSDP, nn.Module]:
         if not self.encoder_cfg.fsdp:
             return model
-        
-        from transformers import CLIPTextModelWithProjection
-        from transformers import T5PreTrainedModel
+
+        from transformers import CLIPTextModelWithProjection, T5PreTrainedModel
 
         if isinstance(model, CLIPTextModelWithProjection):
             auto_wrap_fn = functools.partial(
-                lambda_auto_wrap_policy,
-                lambda_fn=lambda m: m in list(model.text_model.encoder.layers))
+                lambda_auto_wrap_policy, lambda_fn=lambda m: m in list(model.text_model.encoder.layers)
+            )
         elif isinstance(model, T5PreTrainedModel):
             auto_wrap_fn = None
         else:
             auto_wrap_fn = None
             warnings.warn(f"auto_wrap_fn is not set for {model.__class__.__name__}, use default auto_wrap_fn.")
-        
-        pgroup = CommContext().get_intra_node_process_group() if self.encoder_cfg.group else CommContext().get_group(CommMode.GLOBAL)
-        
+
+        pgroup = (
+            CommContext().get_intra_node_process_group()
+            if self.encoder_cfg.group
+            else CommContext().get_group(CommMode.GLOBAL)
+        )
+
         model = FSDP(
             model,
             auto_wrap_policy=auto_wrap_fn,
@@ -140,11 +148,12 @@ class LiteGen:
         if hasattr(model, "get_fsdp_wrap_module_list"):
             return model.get_fsdp_wrap_module_list()
         else:
-            # find the module list that 
+            # find the module list that
             def find_repeated_module_lists(model):
                 repeated_module_lists = []
-                
+
                 from collections import defaultdict
+
                 def _check_module_list(module):
                     module_count = defaultdict(int)
                     for _, child in module.named_children():
@@ -155,9 +164,10 @@ class LiteGen:
                                 repeated_module_lists.append(child)
                         else:
                             _check_module_list(child)
-                
+
                 _check_module_list(model)
                 return repeated_module_lists
+
             repeated_module_lists = find_repeated_module_lists(model)
             if len(repeated_module_lists) > 0:
                 module_list = [list(modulelist) for modulelist in repeated_module_lists]
@@ -165,19 +175,15 @@ class LiteGen:
             else:
                 return None
 
-            
     def _setup_ddp_strategy_for_model(self, model: nn.Module) -> FSDP:
         # TODO: change intra node group impl
-        mp_pp_world_size = 1 # mp_world_size * pp_world_size # TODO hard code temporary
+        mp_pp_world_size = 1  # mp_world_size * pp_world_size
 
         hsdp_hard_condition = (
             CommContext().get_inter_node_process_group() is not None
             and CommContext().get_local_world_size() % mp_pp_world_size == 0
         )
-        hsdp_soft_condition = (
-            hsdp_hard_condition
-            and mp_pp_world_size <= CommContext().get_local_world_size() // 4
-        )
+        hsdp_soft_condition = hsdp_hard_condition and mp_pp_world_size <= CommContext().get_local_world_size() // 4
 
         # select ddp strategy
         fsdp_strategy = None
@@ -193,20 +199,19 @@ class LiteGen:
                     fsdp_strategy = "fsdp"
             elif self.zero_degree == 2:
                 fsdp_strategy = "sdp"
-            elif self.zero_degree == 1 or self.zero_degree == 0:
+            elif self.zero_degree in (0, 1):
                 fsdp_strategy = None
             else:
                 raise ValueError(f"Invalid zero degree: {self.zero_degree}")
-        else:   # TODO to be removed
+        else:  # TODO to be removed
             fsdp_strategy = "hsdp" if hsdp_soft_condition else "sdp"
-            logging.getLogger(__name__).info(
-                "Using automatically decided data parallel strategy: "
-                f"{fsdp_strategy}."
-            )
+            print(f"Using automatically decided data parallel strategy: {fsdp_strategy}.")
 
         # setup ddp according to fsdp_strategy
         if fsdp_strategy is None:
-            model = DDP(model.cuda(), device_ids=[CommContext().get_global_rank() % CommContext().get_local_world_size()])
+            model = DDP(
+                model.cuda(), device_ids=[CommContext().get_global_rank() % CommContext().get_local_world_size()]
+            )
         else:
             if fsdp_strategy == "hsdp":
                 intra_node_dp_pg = None
@@ -257,6 +262,7 @@ class LiteGen:
         block_idx = 0
         cut_off = 1 / 2
         p = 1 - self.selective_ratio
+
         def selective_checkpointing(submodule):
             nonlocal block_idx
             nonlocal cut_off
@@ -266,36 +272,37 @@ class LiteGen:
                     cut_off += 1
                     return True
             return False
-        
+
         # Activation checkpoint
         non_reentrant_wrapper = functools.partial(
             checkpoint_wrapper,
             checkpoint_impl=CheckpointImpl.NO_REENTRANT,
         )
         apply_activation_checkpointing(
-            model,
-            checkpoint_wrapper_fn=non_reentrant_wrapper,
-            check_fn=selective_checkpointing
+            model, checkpoint_wrapper_fn=non_reentrant_wrapper, check_fn=selective_checkpointing
         )
 
         return model
-    
+
     def _setup_activation_offload_for_model(self, model):
         def offloading_check_fn(submodule):
             if isinstance(submodule, CheckpointWrapper):
                 return True
             return False
+
         # Activation offload
         h2d_stream = torch.cuda.Stream()
         d2h_stream = torch.cuda.Stream()
         apply_activation_checkpointing(
             model,
-            checkpoint_wrapper_fn=partial(async_offload_wrapper, pin_memory=True, prefetch=True, h2d_stream=h2d_stream, d2h_stream=d2h_stream),
+            checkpoint_wrapper_fn=partial(
+                async_offload_wrapper, pin_memory=True, prefetch=True, h2d_stream=h2d_stream, d2h_stream=d2h_stream
+            ),
             check_fn=offloading_check_fn,
         )
 
         return model
-    
+
     def convert_module(self, model: nn.Module) -> nn.Module:
         model = self.module_converter(model)
 
@@ -314,16 +321,19 @@ class LiteGen:
             pass
 
         return model_ema
-    
+
     def _load_model_checkpoint(self, model):
         load_from = None
         is_resume = False
         if self.config.resume_from:
-            assert self.config.auto_resume == False, "Error, auto_resume should be False when assigned resume in config."
+            assert (
+                self.config.auto_resume is False
+            ), "Error, auto_resume should be False when assigned resume in config."
             load_from = self.config.resume_from
             is_resume = True
             print(f"Resume checkpoint from the specified path: {load_from}")
         elif self.config.auto_resume:
+
             def load_latest_checkpoint(checkpoint_dir):
                 checkpoint_pattern = re.compile(rf"{self.exp_name}_step(\d+)\.pth")
 
@@ -350,7 +360,10 @@ class LiteGen:
                 is_resume = True
                 print(f"Auto resuming from: {load_from}")
             else:
-                print(f"No checkpoint found by auto resuming mode, attempting to initialize from config.init_from: {self.config.init_from}")
+                print(
+                    "No checkpoint found by auto resuming mode, attempting to initialize from config.init_from:"
+                    f" {self.config.init_from}"
+                )
                 load_from = self.config.init_from
                 is_resume = False
         elif self.config.init_from:
@@ -365,19 +378,19 @@ class LiteGen:
 
         return model
 
-            
     def _setup_sequence_parallel(self, model):
         from .distributed.collective import (
-            scatter_to_sequence_parallel_region, 
-            gather_from_sequence_parallel_region
+            gather_from_sequence_parallel_region,
+            scatter_to_sequence_parallel_region,
         )
 
         assert self.sp_size >= 1
         # setup forward hook for the first and last block
         transformers_modules = self._auto_get_transformers_module_list(model)
         sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)
-        
+
         import inspect
+
         first_module_args_name = list(inspect.signature(transformers_modules[0].forward).parameters.keys())
         first_module_divisible_args = []
         for args_name in first_module_args_name:
@@ -385,34 +398,44 @@ class LiteGen:
                 first_module_divisible_args.append(True)
             else:
                 first_module_divisible_args.append(False)
-        
-        def before_first_block(module, input):
+
+        def before_first_block(module, args):  # pylint: disable=W0613
             # TODO to consider the kwargs that contains the divisible arguments.
-            new_inputs = []
-            global divisible_args_shape_checker
+            new_args = []
+            global divisible_args_shape_checker  # pylint: disable=W0601
             divisible_args_shape_checker = {}
             for i, is_divisible in enumerate(first_module_divisible_args):
                 if is_divisible:
-                    hidden_states = input[i]
+                    hidden_states = args[i]
                     eff_seq_len = hidden_states.size(1)
-                    eff_seq_len_varname = first_module_args_name[i]+"_eff_seq_len"
+                    eff_seq_len_varname = first_module_args_name[i] + "_eff_seq_len"
                     globals()[eff_seq_len_varname] = eff_seq_len
                     if hidden_states.size(1) % sp_size != 0:
-                        hidden_states = torch.cat([hidden_states, torch.zeros([hidden_states.size(0), sp_size - eff_seq_len % sp_size, hidden_states.size(2)], dtype=hidden_states.dtype, device=hidden_states.device)], dim=1)
+                        hidden_states = torch.cat(
+                            [
+                                hidden_states,
+                                torch.zeros(
+                                    [hidden_states.size(0), sp_size - eff_seq_len % sp_size, hidden_states.size(2)],
+                                    dtype=hidden_states.dtype,
+                                    device=hidden_states.device,
+                                ),
+                            ],
+                            dim=1,
+                        )
                     hidden_states = scatter_to_sequence_parallel_region(hidden_states, rank0_only=False)
-                    new_inputs.append(hidden_states)
+                    new_args.append(hidden_states)
                     divisible_args_shape_checker[hidden_states.shape] = eff_seq_len
                 else:
-                    new_inputs.append(input[i])
-            return tuple(new_inputs)
-        
-        def after_last_block(module, args, output):
-            global divisible_args_shape_checker
+                    new_args.append(args[i])
+            return tuple(new_args)
+
+        def after_last_block(module, args, output):  # pylint: disable=W0613
+            global divisible_args_shape_checker  # pylint: disable=W0602
             new_output = []
             for i in range(len(output)):
                 if isinstance(output[i], torch.Tensor):
                     hidden_states = output[i]
-                    if hidden_states.shape in divisible_args_shape_checker.keys():
+                    if hidden_states.shape in divisible_args_shape_checker:
                         eff_seq_len = divisible_args_shape_checker[hidden_states.shape]
                         hidden_states = gather_from_sequence_parallel_region(hidden_states, rank0_only=True)
                         hidden_states = hidden_states[:, :eff_seq_len, :].contiguous()
@@ -421,11 +444,11 @@ class LiteGen:
                     new_output.append(output[i])
 
             return tuple(new_output)
-        
-        def before_each_attention(module, args, kwargs):
+
+        def before_each_attention(module, args, kwargs):  # pylint: disable=W0613
             for i, is_divisible in enumerate(first_module_divisible_args):
                 if is_divisible:
-                    eff_seq_len_varname = first_module_args_name[i]+"_eff_seq_len"
+                    eff_seq_len_varname = first_module_args_name[i] + "_eff_seq_len"
                     eff_seq_len = globals()[eff_seq_len_varname]
                     kwargs[eff_seq_len_varname] = eff_seq_len
 
@@ -457,7 +480,9 @@ class LiteGen:
                 model_requires_grad = True
                 break
         if model_requires_grad:
-            assert self.model is None, "Only one module that contains trainable parameters is allowed, but got multiple."
+            assert (
+                self.model is None
+            ), "Only one module that contains trainable parameters is allowed, but got multiple."
             # setup sequence parallel
             model = self.convert_module(model)
 
@@ -481,9 +506,12 @@ class LiteGen:
             # setup ema
             if self.ema_cfg.enable:
                 if self.config.auto_resume:
-                    assert not self.ema_cfg.resume_from, "Error: 'resume_from' of ema should not be set when 'auto_resume' is enabled."
+                    assert (
+                        not self.ema_cfg.resume_from
+                    ), "Error: 'resume_from' of ema should not be set when 'auto_resume' is enabled."
                 load_from = getattr(self.ema_cfg, "resume_from", None)
                 if load_from is None and self.config.auto_resume:
+
                     def load_latest_checkpoint(checkpoint_dir):
                         checkpoint_pattern = re.compile(rf"{self.exp_name}_step(\d+)\.pth")
 
@@ -506,7 +534,7 @@ class LiteGen:
 
                     model_checkpoint_filename = load_latest_checkpoint(self.checkpoint_dir)
                     model_ckpt_fp_wo_ext, _ = os.path.splitext(model_checkpoint_filename)
-                    ema_filename = f"{model_ckpt_fp_wo_ext}.ema.pth"                    
+                    ema_filename = f"{model_ckpt_fp_wo_ext}.ema.pth"
                     load_from = ema_filename
                 if load_from is not None:
                     model_ema = self._load_ema(
@@ -532,10 +560,7 @@ class LiteGen:
                 if is_resume:
                     resume_step = torch.tensor(state_dict["step"], dtype=torch.long, device=self.device)
                 state_dict.pop("step")
-            missing_keys, unexpected_keys = model.load_state_dict(
-                state_dict,
-                strict=strict
-            )
+            missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=strict)
             print("Model initialization result:")
             print(f"  Missing keys: {missing_keys}")
             print(f"  Unexpected keys: {unexpected_keys}")
@@ -543,19 +568,18 @@ class LiteGen:
         self.resume_step = resume_step.item()
         dist.barrier()
         return model
-    
+
     def _load_ema(self, model_ema, filepath, strict=True):
         if CommContext().get_global_rank() == 0:
             missing_keys, unexpected_keys = model_ema.load_state_dict(
-                torch.load(filepath, map_location="cpu"),
-                strict=strict
+                torch.load(filepath, map_location="cpu"), strict=strict
             )
             print("Model EMA initialization result:")
             print(f"  Missing keys: {missing_keys}")
             print(f"  Unexpected keys: {unexpected_keys}")
         dist.barrier()
         return model_ema
-    
+
     def save_model(self, output_folder=None, filename=None, step=None):
         state_dict = get_model_state_dict(
             self.model,
@@ -573,7 +597,11 @@ class LiteGen:
                 filename = f"{self.exp_name}_step{step}.pth" if step is not None else f"{self.exp_name}.pth"
             else:
                 if step is not None:
-                    warnings.warn("Both 'filename' and 'step' are provided. 'step' will be ignored, and the provided 'filename' will be used. Consider removing 'step' if it's unnecessary, or use save_model(step=step) to automatically set the checkpoint filename and save the model.")
+                    warnings.warn(
+                        "Both 'filename' and 'step' are provided. 'step' will be ignored, and the provided 'filename'"
+                        " will be used. Consider removing 'step' if it's unnecessary, or use save_model(step=step) to"
+                        " automatically set the checkpoint filename and save the model."
+                    )
 
             os.makedirs(output_folder, exist_ok=True)
             torch.save(state_dict, os.path.join(output_folder, filename))
@@ -639,12 +667,15 @@ class LiteGen:
             optimizer_filename = f"{model_ckpt_fp_wo_ext}.optim_state.pth"
 
             return optimizer_filename
-                
+
         load_from = None
         if self.config.resume_from:
-            assert self.config.auto_resume == False, "Error, auto_resume should be False when assigned resume in config."
+            assert (
+                self.config.auto_resume is False
+            ), "Error, auto_resume should be False when assigned resume in config."
             load_from = get_optimizer_filename(self.config.resume_from)
         elif self.config.auto_resume:
+
             def load_latest_checkpoint(checkpoint_dir):
                 checkpoint_pattern = re.compile(rf"{self.exp_name}_step(\d+)\.pth")
 
@@ -665,11 +696,13 @@ class LiteGen:
                 else:
                     return None
 
-            load_model_from = load_latest_checkpoint(self.checkpoint_dir)  
+            load_model_from = load_latest_checkpoint(self.checkpoint_dir)
             if load_model_from is None:
-                print(f"No model checkpoint found by auto resuming mode, attempting \
-                      to initialize from config.init_from: {self.config.init_from}, \
-                      and the optimizer state will not be resumed.")
+                print(
+                    "No model checkpoint found by auto resuming mode, attempting to initialize"
+                    f" from config.init_from: {self.config.init_from}, and the optimizer state"
+                    " will not be resumed."
+                )
                 load_from = None
             else:
                 load_from = get_optimizer_filename(load_model_from)
@@ -678,10 +711,10 @@ class LiteGen:
             print(f"Resume the optimizer state from {load_from}")
             optimizer = self._load_optimizer(optimizer, "", load_from)
         else:
-            print(f"No optimizer state checkpoint for loading.")
+            print("No optimizer state checkpoint for loading.")
 
         return optimizer
-    
+
     @torch.no_grad()
     def update_ema(self, model=None, decay=0.9999):
         if model is not None:
@@ -698,26 +731,33 @@ class LiteGen:
         elif self.ema_cfg.sharded:
             self.model_ema.update(model, decay, only_trainable=True)
 
-            
     def _initialize_optimizer(self, optimizer):
         assert self.model is not None, "Please initialize model first."
         if self.zero_degree == 1:
-            assert isinstance(self.model, DDP), "ZeroRedundancyOptimizer only supports DDP wrapped model when using zero 1."
+            assert isinstance(
+                self.model, DDP
+            ), "ZeroRedundancyOptimizer only supports DDP wrapped model when using zero 1."
 
             def _optimizer_to_zero(optimizer):
                 optimizer_cls = type(optimizer)
                 from torch.distributed.optim import ZeroRedundancyOptimizer
-                
+
                 if optimizer_cls in ConstRegistry().support_optimizers:
                     optimizer_defaults = optimizer.defaults
                     del optimizer
-                    zero_optimizer = ZeroRedundancyOptimizer(self.model.parameters(), optimizer_class=optimizer_cls, **optimizer_defaults)
+                    zero_optimizer = ZeroRedundancyOptimizer(
+                        self.model.parameters(), optimizer_class=optimizer_cls, **optimizer_defaults
+                    )
                 else:
-                    raise NotImplementedError(f"Optimizer {optimizer_cls} is not supported currently. Supported optimizers are {ConstRegistry().support_optimizers}")
-                return zero_optimizer            
-                        
+                    raise NotImplementedError(
+                        f"Optimizer {optimizer_cls} is not supported currently. Supported optimizers are"
+                        f" {ConstRegistry().support_optimizers}"
+                    )
+                return zero_optimizer
+
             optimizer = _optimizer_to_zero(optimizer)
         else:
+
             def _recreate_optimizer(optimizer):
                 optimizer_cls = type(optimizer)
                 optimizer_defaults = optimizer.defaults
@@ -726,21 +766,24 @@ class LiteGen:
                 new_optimizer = optimizer_cls(self.model.parameters(), **optimizer_defaults)
 
                 return new_optimizer
-   
+
             optimizer = _recreate_optimizer(optimizer)
-            
+
         # load optimizer state dict
         optimizer = self.load_optimizer_state(optimizer)
 
         for param_group in optimizer.param_groups:
             param_group["lr"] = self.learning_rate
             param_group["weight_decay"] = self.weight_decay
-        
+
         self.optimizer = optimizer
         return optimizer
 
     def _initialize_dataset(self, obj):
-        assert isinstance(obj, ConstRegistry().support_datasets), f"only support dataset with type {ConstRegistry().support_datasets}, but got {type(obj)}"
+        assert isinstance(
+            obj, ConstRegistry().support_datasets
+        ), f"only support dataset with type {ConstRegistry().support_datasets}, but got {type(obj)}"
+
         def get_train_sampler(dataset, rank, world_size, global_batch_size, max_steps, resume_step, seed):
             sample_indices = torch.empty([max_steps * global_batch_size // world_size], dtype=torch.long)
             epoch_id, fill_ptr, offs = 0, 0, 0
@@ -750,25 +793,27 @@ class LiteGen:
                 g.manual_seed(seed + epoch_id)
                 epoch_sample_indices = torch.randperm(len(dataset), generator=g)
                 epoch_id += 1
-                epoch_sample_indices = epoch_sample_indices[(rank + offs) % world_size::world_size]
+                epoch_sample_indices = epoch_sample_indices[(rank + offs) % world_size :: world_size]
                 offs = (offs + world_size - len(dataset) % world_size) % world_size
-                epoch_sample_indices = epoch_sample_indices[:sample_indices.size(0) - fill_ptr]
-                sample_indices[fill_ptr: fill_ptr + epoch_sample_indices.size(0)] = epoch_sample_indices
+                epoch_sample_indices = epoch_sample_indices[: sample_indices.size(0) - fill_ptr]
+                sample_indices[fill_ptr : fill_ptr + epoch_sample_indices.size(0)] = epoch_sample_indices
                 fill_ptr += epoch_sample_indices.size(0)
 
-            return sample_indices[resume_step * global_batch_size // world_size:].tolist()
+            return sample_indices[resume_step * global_batch_size // world_size :].tolist()
 
         def default_collate_fn(samples):
             image = [x[0] for x in samples]
             caps = [x[1] for x in samples]
             return image, caps
-        
+
         sampler = get_train_sampler(
-            obj, 
-            CommContext().get_local_rank(ParallelMode.DATA_PARALLEL), 
-            CommContext().get_world_size(ParallelMode.DATA_PARALLEL), 
+            obj,
+            CommContext().get_local_rank(ParallelMode.DATA_PARALLEL),
+            CommContext().get_world_size(ParallelMode.DATA_PARALLEL),
             self.config.global_batch_size,
-            self.config.max_steps, self.resume_step, self.config.global_seed
+            self.config.max_steps,
+            self.resume_step,
+            self.config.global_seed,
         )
         local_batch_size = self.config.global_batch_size // CommContext().get_world_size(ParallelMode.DATA_PARALLEL)
 

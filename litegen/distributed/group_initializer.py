@@ -92,6 +92,7 @@ class TPGroupInitializer(ProcessGroupInitializer):
             self.mode,
         )
 
+
 class SPGroupInitializer(ProcessGroupInitializer):
     """sequence parallel group initializer"""
 
@@ -114,6 +115,7 @@ class SPGroupInitializer(ProcessGroupInitializer):
             self.mode,
         )
 
+
 class IntraNodeGroupInitializer(ProcessGroupInitializer):
     """intra node group initializer"""
 
@@ -135,7 +137,8 @@ class IntraNodeGroupInitializer(ProcessGroupInitializer):
             self.ranks_in_group,
             self.mode,
         )
-    
+
+
 class InterNodeGroupInitializer(ProcessGroupInitializer):
     """inter node group initializer"""
 

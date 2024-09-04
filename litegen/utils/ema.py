@@ -1,7 +1,6 @@
-import torch
-from torch import nn
-from copy import deepcopy
 from collections import OrderedDict
+
+import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -20,8 +19,8 @@ def partition_params(model, num_partitions, return_dict=False):
     partitions = []
     elcnt = 0
     partition_id = 0
-    numel_per_partition = sum([p.numel() for p in model.parameters()]) // num_partitions
-    for ind in range(num_partitions):
+    numel_per_partition = sum(p.numel() for p in model.parameters()) // num_partitions
+    for _ in range(num_partitions):
         if return_dict:
             partitions.append({})
         else:
@@ -32,16 +31,16 @@ def partition_params(model, num_partitions, return_dict=False):
             partitions[partition_id][name] = param
         else:
             partitions[partition_id].append(param)
-        elcnt+=param.numel()
+        elcnt += param.numel()
         if elcnt > numel_per_partition:
-            partition_id+=1
-            elcnt=0
+            partition_id += 1
+            elcnt = 0
     return partitions
 
 
-class ShardedEMA():
-    """Shard the ema params across DDP group.
-    """
+class ShardedEMA:
+    """Shard the ema params across DDP group."""
+
     def __init__(self, model, group=None) -> None:
         self.rank = dist.get_rank(group)
         self.group = group
@@ -59,10 +58,10 @@ class ShardedEMA():
         if isinstance(model, DDP):
             model = model.module
         model_params = OrderedDict(model.named_parameters())
-        for name in self.param_shard.keys():
+        for name, param in self.param_shard.items():
             if only_trainable and (not model_params[name].requires_grad):
                 continue
-            self.param_shard[name].mul_(decay).add_(model_params[name].data, alpha=1 - decay)
+            param.mul_(decay).add_(model_params[name].data, alpha=1 - decay)
 
         self.named_buffers = model.named_buffers()
 
@@ -82,7 +81,7 @@ class ShardedEMA():
         for k in state_dict.keys():
             state_dict[k] = state_dict[k].cpu()
         for name, val in self.param_shard.items():
-            if self.rank==0:
+            if self.rank == 0:
                 state_dict[name] = val.cpu()
 
         for rank in range(1, len(self.all_param_shards)):
@@ -102,9 +101,9 @@ class ShardedEMA():
 
     def verify_with_gt(self, gt_ema):
         sd_ema_params = self.state_dict()
-        if torch.distributed.get_rank()==0:
+        if torch.distributed.get_rank() == 0:
             for name, gt_param in gt_ema.named_parameters():
                 sd_param = sd_ema_params[name]
                 if not torch.equal(gt_param.cpu(), sd_param):
-                    print(f"param {name} not equal, diff: ", (gt_param.cpu()-sd_param).sum())
+                    print(f"param {name} not equal, diff: ", (gt_param.cpu() - sd_param).sum())
                 assert torch.equal(gt_param.cpu(), sd_param)

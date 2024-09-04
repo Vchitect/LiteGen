@@ -1,5 +1,5 @@
 # pylint: disable=W0613
-from typing import Optional, Any
+from typing import Any, Optional
 
 import torch
 from torch import distributed as dist
@@ -153,6 +153,9 @@ def gather(tensor, comm_mode: CommMode, gather_list: Optional[list] = None, dst:
 
 
 class _AllToAllFunction(torch.autograd.Function):
+    """
+    class for all-to-all communication op
+    """
 
     @staticmethod
     def forward(ctx: Any, input_: torch.Tensor, gather_dim: int, scatter_dim: int, group: Any) -> torch.Tensor:
@@ -196,39 +199,41 @@ class _AllToAllFunction(torch.autograd.Function):
 def all_to_all(input_: torch.Tensor, gather_dim: int, scatter_dim: int, group: Any) -> torch.Tensor:
     return _AllToAllFunction.apply(input_, gather_dim, scatter_dim, group)
 
+
 def _sp_split(input_: torch.Tensor) -> torch.Tensor:
-    sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)    
+    sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)
     sp_rank = CommContext().get_local_rank(ParallelMode.SEQUENCE_PARALLEL)
     if sp_size == 1:
         return input_
     assert input_.size(1) % sp_size == 0
     return input_.chunk(sp_size, dim=1)[sp_rank].contiguous()
 
+
 def _sp_scatter(input_: torch.Tensor) -> torch.Tensor:
     sp_group = CommContext().get_group(ParallelMode.SEQUENCE_PARALLEL)
     sp_src = CommContext().get_ranks_in_group(ParallelMode.SEQUENCE_PARALLEL)[0]
     sp_rank = CommContext().get_local_rank(ParallelMode.SEQUENCE_PARALLEL)
-    sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)    
+    sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)
 
     if sp_size == 1:
         return input_
     assert input_.size(1) % sp_size == 0
     output = torch.empty(
-        [x if i != 1 else x // sp_size for i, x in enumerate(input_.size())],
-        dtype=input_.dtype, device=input_.device
+        [x if i != 1 else x // sp_size for i, x in enumerate(input_.size())], dtype=input_.dtype, device=input_.device
     )
     dist.scatter(
         output,
         [x.contiguous() for x in input_.chunk(sp_size, dim=1)] if sp_rank == 0 else None,
-        src=sp_src, group=sp_group
+        src=sp_src,
+        group=sp_group,
     )
     return output
 
 
 def _sp_gather(input_: torch.Tensor) -> torch.Tensor:
     sp_group = CommContext().get_group(ParallelMode.SEQUENCE_PARALLEL)
-    sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)   
-    
+    sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)
+
     if sp_size == 1:
         return input_
     output = [torch.empty_like(input_) for _ in range(sp_size)]
@@ -237,6 +242,9 @@ def _sp_gather(input_: torch.Tensor) -> torch.Tensor:
 
 
 class _ScatterToSequenceParallelRegion(torch.autograd.Function):
+    """
+    class for scatter to sequence parallel communication
+    """
 
     @staticmethod
     def forward(ctx: Any, input_: torch.Tensor, rank0_only: bool = True) -> torch.Tensor:
@@ -247,11 +255,14 @@ class _ScatterToSequenceParallelRegion(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> torch.Tensor:
-        sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)    
+        sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)
         return _sp_gather(grad_output / sp_size), None
 
 
 class _GatherFromSequenceParallelRegion(torch.autograd.Function):
+    """
+    class for gather op for sequence parallel
+    """
 
     @staticmethod
     def forward(ctx: Any, input_: torch.Tensor, rank0_only: bool = True) -> torch.Tensor:
@@ -260,7 +271,7 @@ class _GatherFromSequenceParallelRegion(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> torch.Tensor:
-        sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)    
+        sp_size = CommContext().get_world_size(ParallelMode.SEQUENCE_PARALLEL)
         if ctx.rank0_only:
             return _sp_scatter(grad_output) * sp_size, None
         else:

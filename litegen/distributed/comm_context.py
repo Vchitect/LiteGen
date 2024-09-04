@@ -4,16 +4,15 @@ import gc
 import torch
 from torch import distributed as dist
 
-from .utils import _RANK_STR, _WORLD_SIZE_STR, Config, EnvSetting, SingletonMeta
-
 from .group_initializer import (
     CommMode,
     DPGroupInitializer,
-    TPGroupInitializer,
-    SPGroupInitializer,
-    IntraNodeGroupInitializer,
     InterNodeGroupInitializer,
+    IntraNodeGroupInitializer,
+    SPGroupInitializer,
+    TPGroupInitializer,
 )
+from .utils import Config, EnvSetting, SingletonMeta
 
 
 class CommContext(metaclass=SingletonMeta):
@@ -89,7 +88,7 @@ class CommContext(metaclass=SingletonMeta):
 
     def get_ranks_in_group(self, comm_mode: CommMode):
         return self._ranks_in_group[comm_mode]
-    
+
     def get_local_world_size(self):
         """
         return the world size in one node
@@ -98,14 +97,12 @@ class CommContext(metaclass=SingletonMeta):
 
     def get_intra_node_process_group(self):
         return self.get_group(CommMode.INTRA_NODE)
-    
+
     def get_inter_node_process_group(self):
         return self.get_group(CommMode.INTER_NODE)
 
     def is_main_rank(self):
         return self.get_global_rank() == 0
-        
-        
 
     def init_groups(self, config: Config):
         """
@@ -123,7 +120,9 @@ class CommContext(metaclass=SingletonMeta):
         assert world_size % (self._tensor_parallel_size * self._sequence_parallel_size) == 0
         self._data_parallel_size = world_size // self._tensor_parallel_size // self._sequence_parallel_size
 
-        assert self._tensor_parallel_size == 1 or self._sequence_parallel_size == 1, "TP and SP can't be used together currently."
+        assert (
+            self._tensor_parallel_size == 1 or self._sequence_parallel_size == 1
+        ), "TP and SP can't be used together currently."
 
         initializers = []
         initializers.append(DPGroupInitializer(rank, world_size, self._data_parallel_size))

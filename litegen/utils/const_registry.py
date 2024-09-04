@@ -1,7 +1,13 @@
+from typing import Any, Dict, List, Tuple, Type
+
 import torch
-from typing import List, Tuple, Dict, Type, Any
+
 
 class ConstRegistry:
+    """
+    class for constant registry
+    """
+
     _instance = None
 
     def __new__(cls):
@@ -30,6 +36,7 @@ class ConstRegistry:
         self.support_datasets.append(torch.utils.data.Dataset)
         try:
             from datasets import arrow_dataset  # huggingface datasets
+
             self._support_datasets.append(arrow_dataset.Dataset)
         except ImportError:
             pass
@@ -38,7 +45,12 @@ class ConstRegistry:
 
     def _load_attention(self):
         try:
-            from models.vid_sd3.sparse_attention import Attention, SparseAttnProcessor, SparseAttnProcessorSP
+            from models.vid_sd3.sparse_attention import (
+                Attention,
+                SparseAttnProcessor,
+                SparseAttnProcessorSP,
+            )
+
             self._support_attention.append(Attention)
             self._sequence_parallel_attn_processor_convert_map[Attention] = {SparseAttnProcessor: SparseAttnProcessorSP}
         except ImportError:
