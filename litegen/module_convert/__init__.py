@@ -2,6 +2,8 @@ from typing import Any
 
 from torch import nn
 
+from litegen.utils.const_registry import ConstRegistry
+
 from .op_replace import replace_all_layernorms
 
 
@@ -29,13 +31,7 @@ class ModuleConverter:
         return module
 
     def convert_to_sequence_parallel(self, model):
-        from models.vid_sd3.sparse_attention import (
-            Attention,
-            SparseAttnProcessor,
-            SparseAttnProcessorSP,
-        )
-
-        sequence_parallel_attn_processor_convert_map = {Attention: {SparseAttnProcessor: SparseAttnProcessorSP}}
+        sequence_parallel_attn_processor_convert_map = ConstRegistry().sequence_parallel_attn_processor_convert_map
 
         def _convert_attn_processor(module):
             if isinstance(module, tuple(sequence_parallel_attn_processor_convert_map.keys())):

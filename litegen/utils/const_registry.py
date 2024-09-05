@@ -45,11 +45,8 @@ class ConstRegistry:
 
     def _load_attention(self):
         try:
-            from models.vid_sd3.sparse_attention import (
-                Attention,
-                SparseAttnProcessor,
-                SparseAttnProcessorSP,
-            )
+            from litegen.modules.attention.sparse_attention import SparseAttnProcessorSP
+            from models.vid_sd3.sparse_attention import Attention, SparseAttnProcessor
 
             self._support_attention.append(Attention)
             self._sequence_parallel_attn_processor_convert_map[Attention] = {SparseAttnProcessor: SparseAttnProcessorSP}
