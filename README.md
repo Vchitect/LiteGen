@@ -3,7 +3,7 @@
 
 ## 📜 About
 
-LiteGen is a lightweight and high efficient training acceleration framework specifically designed for diffusion tasks, and has been applied and validated on video generation project [Vchitech-XL](). This framework integrates multiple training optimization techniques and offers a user-friendly interface, allowing researchers and developers to easily scale from single-GPU setups to multi-node, multi-GPU environments.
+LiteGen is a lightweight and high efficient training acceleration framework specifically designed for diffusion tasks, and has been applied and validated on video generation project [Vchitech-2.0](https://github.com/Vchitect/Vchitect-2.0). This framework integrates multiple training optimization techniques and offers a user-friendly interface, allowing researchers and developers to easily scale from single-GPU setups to multi-node, multi-GPU environments.
 
 ## ✨ Support Features
 
@@ -18,7 +18,7 @@ LiteGen is a lightweight and high efficient training acceleration framework spec
 - distributed optimization
   - DDP
   - ZeRO1,2,3
-  - Sequence Parallel (Ulysses implementation for Vchitect-XL Model) 
+  - Sequence Parallel (Ulysses implementation for Vchitect-2.0 Model) 
 - memory optimization
   - Grad activation checkpointing
   - selective checkpointing
@@ -129,7 +129,7 @@ sp_size: 8  # Sequence parallel degree
 
 Sequence Parallel inherently requires scatter and gather operations on tensors within certain modules. Therefore, LiteGen's implementation necessitates a Sequence Parallel version of the AttentionProcessor for the Attention class, as well as a conversion mapping in the ModuleConverter from serial AttentionProcessor to its Sequence Parallel counterpart.
 
-We have successfully implemented Sequence Parallel support for the Vchitect-XL model using LiteGen. For reference, you can find the relevant code in the [Vchitect-XL]() repository.
+We have successfully implemented Sequence Parallel support for the Vchitect-2.0 model using LiteGen. For reference, you can find the relevant code in the [Vchitect-2.0](https://github.com/Vchitect/Vchitect-2.0) repository.
 
 
 #### Sharded Encoder
@@ -294,7 +294,7 @@ gen = LiteGen(config)
 
 ## 🚀 Performance
 
-LiteGen implements Sequence Parallel and Activation Offload techniques, which effectively reduce memory usage and enable training on long sequences for Diffusion tasks. We conducted tests on NVIDIA A100 GPUs to determine the maximum supported sequence length when training Vchitect-XL. All other optimizations remained the same. The results are as follows:
+LiteGen implements Sequence Parallel and Activation Offload techniques, which effectively reduce memory usage and enable training on long sequences for Diffusion tasks. We conducted tests on NVIDIA A100 GPUs to determine the maximum supported sequence length when training Vchitect-2.0. All other optimizations remained the same. The results are as follows:
 
 ![Sequence_length](assets/imgs/sequence_length.jpg)
 (AO: Activation Offload, SP: Sequence Parallel)
