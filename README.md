@@ -18,7 +18,7 @@ LiteGen is a lightweight and high efficient training acceleration framework spec
 - distributed optimization
   - DDP
   - ZeRO1,2,3
-  - Sequence Parallel (Ulysses implementation for Vchitect-2.0 Model) 
+  - Sequence Parallel (Ulysses implementation for Vchitect-2.0 Model)
 - memory optimization
   - Grad activation checkpointing
   - selective checkpointing
@@ -27,9 +27,9 @@ We also provide easy-to-use interfaces for common operations such as model loadi
 
 ## 🔨 Usage
 
-Implementing LiteGen's optimizations involves two straightforward steps: 
+Implementing LiteGen's optimizations involves two straightforward steps:
 
-1. **Configuration**: Adjust the relevant fields in your config file to enable desired optimizations. 
+1. **Configuration**: Adjust the relevant fields in your config file to enable desired optimizations.
 2. **Integration**: Utilize the api from the `LiteGen` instance in your codebase. These simple steps allow you seamlessly integrating optimizations into your existing workflow.
 
 ### Quick Start Guide
@@ -59,7 +59,7 @@ model, optimizer, text_encoder, dataloader, vae_encode = gen.initialize(
 )
 ```
 
-The two steps described above constitute the minimal code changes required to implement LiteGen's optimizations. This approach allows for quick integration while leveraging LiteGen's performance enhancements. 
+The two steps described above constitute the minimal code changes required to implement LiteGen's optimizations. This approach allows for quick integration while leveraging LiteGen's performance enhancements.
 
 In the following sections, we provide a detailed explanation of the specific optimizations LiteGen offers and how to configure the corresponding key-value pairs in the config file.
 
@@ -92,7 +92,7 @@ LiteGen incorporates activation checkpointing, a common optimization technique f
 Example configuration:
 
 ```yaml
-selective_ratio: 0.2    # Ratio of modules that do NOT use activation checkpointing. 
+selective_ratio: 0.2    # Ratio of modules that do NOT use activation checkpointing.
                         # 0: All blocks in the model use activation checkpointing.
                         # 1: No blocks in the model use activation checkpointing.
 ```
@@ -125,7 +125,7 @@ You can configure this feature as follows:
 sp_size: 8  # Sequence parallel degree
 ```
 
-**Note:** 
+**Note:**
 
 Sequence Parallel inherently requires scatter and gather operations on tensors within certain modules. Therefore, LiteGen's implementation necessitates a Sequence Parallel version of the AttentionProcessor for the Attention class, as well as a conversion mapping in the ModuleConverter from serial AttentionProcessor to its Sequence Parallel counterpart.
 
@@ -291,6 +291,62 @@ config = EasyDict(cfg)
 ```python
 gen = LiteGen(config)
 ```
+
+Here we outline essential configuration fields for the LiteGen. While default values of part of fields are available, explicit configuration is recommended to prevent errors and ambiguity.
+
+```yaml
+# experiment and filepath
+exp_name: experiement_name
+checkpoint_dir: path_to_load_checkpoint
+init_from: filepath to the pretrained model checkpoint
+resume_from: filepath to the model checkpoint
+auto_resume: whether to auto resume the checkpoint, True or False
+
+# precision
+precision: parameter precision, one of ['tf32', 'fp32', 'bf16', 'fp16']
+grad_precision: gradient precision to reduce in FSDP, one of ['tf32', 'fp32', 'bf16', 'fp16']
+allow_tf32: whether to enable tf32. True or False.
+
+# optimizer
+lr: learning rate
+weight_decay: weight decay
+fused_optimizer: whether to use fused optimizer implementation. True or False.
+
+# ddp strategy
+zero_degree: degree of ZeRO, one of [0,1,2,3]
+group_zero: whether to do zero communication within the node. True or False
+
+# sequence parallel
+sp_size: sequence parallel degree
+
+# module convert
+fused_layernorm: whether to use fused layernorm implementation. True or False.
+
+# activation optimization
+ac_offload: whether to enable activation offload to reduce GPU memory. True or False.
+selective_ratio: ratio NOT use activation checkpoint, a float number ranging in 0~1
+
+# ema
+ema:
+  enable: whether to enable ema. True or False.
+  sharded: whether to use shareded ema to reduce GPU memory. True or False.
+  resume_from:  path to resume the ema checkpoint. a filepath str or None.
+
+# encoder
+encoder:
+  fsdp: whether to use fsdp to optimize the encoder memory usage. True or False.
+  group: whether to use fsdp within the node for encoder. True or False.
+
+# training settings
+global_seed: global random seed
+max_steps: max steps number
+num_workers: number of workers of dataloader
+pin_memory: whether to enable pin_memory for dataloader
+global_batch_size: total samples used across all ranks in one optimizer step.
+```
+
+Additionally, users can define custom configuration fields to meet specific requirements for algorithm construction and training script needs.
+
 
 ## 🚀 Performance
 

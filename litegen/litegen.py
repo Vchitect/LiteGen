@@ -12,6 +12,7 @@ from typing import Callable, Union
 import numpy as np
 import torch
 import torch.distributed as dist
+from easydict import EasyDict
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -47,56 +48,106 @@ class LiteGen:
 
     def __init__(self, config):
         super().__init__()
-        self.sanity_check(config)
-        initialize_distributed_env(tensor_parallel=config.tp_size, sequence_parallel=config.sp_size)
+        self.config_setting_and_sanity_check(config)
 
-        self.sp_size = config.sp_size
-        self.tp_size = config.tp_size
+        initialize_distributed_env(sequence_parallel=self.sp_size)
 
-        if config.allow_tf32:
+        self.set_random_seed(self.global_seed)
+        self.module_converter = ModuleConverter(config)
+        if self.allow_tf32:
             torch.backends.cuda.matmul.allow_tf32 = True
 
+        self.model = None
+        self.model_ema = None
+        self.resume_step = 0
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def config_setting_and_sanity_check(self, config):
+        # experiment and filepath
+        self.exp_name = getattr(config, "exp_name", "default_exp")
+        if hasattr(config, "checkpoint_dir"):
+            self.checkpoint_dir = config.checkpoint_dir
+        elif hasattr(config, "results_dir"):
+            self.checkpoint_dir = config.results_dir
+        else:  # default
+            self.checkpoint_dir = os.path.join("results", self.exp_name)
+        self.init_from = getattr(config, "init_from", None)
+        self.resume_from = getattr(config, "resume_from", None)
+        self.auto_resume = getattr(config, "auto_resume", False)
+
+        # precision
+        self.allow_tf32 = getattr(config, "allow_tf32", True)
+        self.precision = getattr(config, "precision", "bf16")
+        assert self.precision in [
+            "tf32",
+            "fp32",
+            "bf16",
+            "fp16",
+        ], f"Invalid precision '{self.precision}'. Expected one of: ['tf32', 'fp32', 'bf16', 'fp16']."
+        self.precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[
+            self.precision
+        ]
+        if hasattr(config, "grad_precision"):
+            self.grad_precision = config.grad_precision
+            assert self.grad_precision in [
+                "tf32",
+                "fp32",
+                "bf16",
+                "fp16",
+            ], f"Invalid grad_precision '{self.grad_precision}'. Expected one of: ['tf32', 'fp32', 'bf16', 'fp16']."
+        else:
+            self.grad_precision = None
+        self.grad_precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[
+            self.grad_precision or self.precision
+        ]
+
+        # optimizer
+        self.learning_rate = getattr(config, "lr", 0.0001)
+        self.weight_decay = getattr(config, "weight_decay", 0.0)
+        self.fused_optimizer = config.fused_optimizer
+
+        # ddp strategy
         self.zero_degree = config.zero_degree if hasattr(config, "zero_degree") else None
         self.group_zero = config.group_zero if hasattr(config, "group_zero") else False
-        self.precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[
-            config.precision
-        ]
-        self.grad_precision = {"fp32": torch.float, "tf32": torch.float, "bf16": torch.bfloat16, "fp16": torch.float16}[
-            config.grad_precision or config.precision
-        ]
-        self.learning_rate = config.lr
-        self.fused_optimizer = config.fused_optimizer
-        self.weight_decay = config.weight_decay
+        if self.group_zero:
+            assert self.zero_degree == 3, "Group Zero is only supported for ZeRO3 currently."
 
-        self.distributed_backend = config.distributed_backend if hasattr(config, "distributed_backend") else "torch"
+        # sequence parallel
+        self.sp_size = getattr(config, "sp_size", 1)
 
+        # module convert
+        self.fused_layernorm = getattr(config, "fused_layernorm", False)
+
+        # activation optimize
         self.ac_offload = getattr(config, "ac_offload", False)
         self.selective_ratio = getattr(config, "selective_ratio", 1)  # ratio NOT use activation checkpoint
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.fused_layernorm = config.fused_layernorm
-        self.model = None
-        self.model_ema = None
-
-        self.encoder_cfg = config.encoder
-        self.ema_cfg = config.ema
-
+        # training settings
+        self.global_seed = getattr(config, "global_seed", 0)
+        assert config.num_workers >= 0, f"num_workers should be a non-negative number, but got {config.num_workers}"
+        self.num_workers = getattr(config, "num_workers", 4)
+        self.pin_memory = getattr(config, "pin_memory", True)
+        assert (
+            isinstance(config.global_batch_size, int) and config.global_batch_size > 0
+        ), f"global_batch_size should be a non-negative number, but got {config.global_batch_size}"
+        self.global_batch_size = config.global_batch_size
+        assert config.max_steps > 0, f"Invalid max_steps: {config.max_steps}, it should be a positive number."
         self.max_steps = config.max_steps
-        self.config = config
 
-        self.checkpoint_dir = os.path.join(config.results_dir)
-        self.exp_name = getattr(config, "exp_name", "default_exp")
-        self.resume_step = 0
+        # encoder
+        encoder_cfg = {
+            "fsdp": getattr(config.encoder, "fsdp", True),
+            "group": getattr(config.encoder, "group", False),
+        }
+        self.encoder_cfg = EasyDict(encoder_cfg)
 
-        self.set_random_seed(config.global_seed)
-
-        self.module_converter = ModuleConverter(config)
-
-    def sanity_check(self, config):
-        # model ddp strategy
-        if config.group_zero:
-            assert config.zero_degree == 3, "Group Zero is only supported for ZeRO 3."
+        # ema
+        ema_cfg = {
+            "enable": getattr(config.ema, "enable", False),
+            "sharded": getattr(config.ema, "sharded", True),
+            "resume_from": getattr(config.ema, "resume_from", None),
+        }
+        self.ema_cfg = EasyDict(ema_cfg)
 
     def set_random_seed(self, seed):
         np.random.seed(seed)
@@ -325,14 +376,12 @@ class LiteGen:
     def _load_model_checkpoint(self, model):
         load_from = None
         is_resume = False
-        if self.config.resume_from:
-            assert (
-                self.config.auto_resume is False
-            ), "Error, auto_resume should be False when assigned resume in config."
-            load_from = self.config.resume_from
+        if self.resume_from:
+            assert self.auto_resume is False, "Error, auto_resume should be False when assigned resume in config."
+            load_from = self.resume_from
             is_resume = True
             print(f"Resume checkpoint from the specified path: {load_from}")
-        elif self.config.auto_resume:
+        elif self.auto_resume:
 
             def load_latest_checkpoint(checkpoint_dir):
                 checkpoint_pattern = re.compile(rf"{self.exp_name}_step(\d+)\.pth")
@@ -362,12 +411,12 @@ class LiteGen:
             else:
                 print(
                     "No checkpoint found by auto resuming mode, attempting to initialize from config.init_from:"
-                    f" {self.config.init_from}"
+                    f" {self.init_from}"
                 )
-                load_from = self.config.init_from
+                load_from = self.init_from
                 is_resume = False
-        elif self.config.init_from:
-            load_from = self.config.init_from
+        elif self.init_from:
+            load_from = self.init_from
             is_resume = False
             print(f"Initialize from the specified path: {load_from}")
 
@@ -505,12 +554,12 @@ class LiteGen:
 
             # setup ema
             if self.ema_cfg.enable:
-                if self.config.auto_resume:
+                if self.auto_resume:
                     assert (
                         not self.ema_cfg.resume_from
                     ), "Error: 'resume_from' of ema should not be set when 'auto_resume' is enabled."
                 load_from = getattr(self.ema_cfg, "resume_from", None)
-                if load_from is None and self.config.auto_resume:
+                if load_from is None and self.auto_resume:
 
                     def load_latest_checkpoint(checkpoint_dir):
                         checkpoint_pattern = re.compile(rf"{self.exp_name}_step(\d+)\.pth")
@@ -669,12 +718,10 @@ class LiteGen:
             return optimizer_filename
 
         load_from = None
-        if self.config.resume_from:
-            assert (
-                self.config.auto_resume is False
-            ), "Error, auto_resume should be False when assigned resume in config."
-            load_from = get_optimizer_filename(self.config.resume_from)
-        elif self.config.auto_resume:
+        if self.resume_from:
+            assert self.auto_resume is False, "Error, auto_resume should be False when assigned resume in config."
+            load_from = get_optimizer_filename(self.resume_from)
+        elif self.auto_resume:
 
             def load_latest_checkpoint(checkpoint_dir):
                 checkpoint_pattern = re.compile(rf"{self.exp_name}_step(\d+)\.pth")
@@ -700,7 +747,7 @@ class LiteGen:
             if load_model_from is None:
                 print(
                     "No model checkpoint found by auto resuming mode, attempting to initialize"
-                    f" from config.init_from: {self.config.init_from}, and the optimizer state"
+                    f" from config.init_from: {self.init_from}, and the optimizer state"
                     " will not be resumed."
                 )
                 load_from = None
@@ -810,20 +857,20 @@ class LiteGen:
             obj,
             CommContext().get_local_rank(ParallelMode.DATA_PARALLEL),
             CommContext().get_world_size(ParallelMode.DATA_PARALLEL),
-            self.config.global_batch_size,
-            self.config.max_steps,
+            self.global_batch_size,
+            self.max_steps,
             self.resume_step,
-            self.config.global_seed,
+            self.global_seed,
         )
-        local_batch_size = self.config.global_batch_size // CommContext().get_world_size(ParallelMode.DATA_PARALLEL)
+        local_batch_size = self.global_batch_size // CommContext().get_world_size(ParallelMode.DATA_PARALLEL)
 
         collate_fn = getattr(obj, "collate_fn", default_collate_fn)
         dataloader = DataLoader(
             obj,
             batch_size=local_batch_size,
             sampler=sampler,
-            num_workers=self.config.num_workers,
-            pin_memory=self.config.pin_memory,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
             collate_fn=collate_fn,
         )
         return dataloader
