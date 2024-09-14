@@ -359,4 +359,4 @@ Results demonstrate that with all memory optimizations enabled, LiteGen supports
 
 ## 🔑 License
 
-This code is licensed under Apache-2.0.
+This code is licensed under Apache-2.0. The framework is fully open for academic research and also allows free commercial usage. To apply for a commercial license or for other questions or collaborations, please contact yangzhenyu@pjlab.org.cn.
